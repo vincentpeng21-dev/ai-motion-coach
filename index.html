@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Motion Coach — Squat Analysis</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">AI MOTION COACH</span>
+      <span class="brand-sub">Side-View Squat Analysis · Prototype</span>
+    </div>
+    <div class="privacy-pill">🔒 LOCAL AI — Nothing leaves this device</div>
+  </header>
+
+  <!-- ============ MODE SELECT ============ -->
+  <section id="modeSelect" class="mode-select">
+    <h1 class="mode-select-title">Choose an input mode</h1>
+    <div class="mode-cards">
+      <button id="modeWebcamBtn" class="mode-card">
+        <span class="mode-card-icon">📷</span>
+        <span class="mode-card-title">Webcam Live Analysis</span>
+        <span class="mode-card-sub">Real-time squat coaching from your camera</span>
+      </button>
+      <button id="modeVideoBtn" class="mode-card">
+        <span class="mode-card-icon">🎬</span>
+        <span class="mode-card-title">Video Upload Analysis</span>
+        <span class="mode-card-sub">Analyze a recorded squat set, rep by rep</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ============ MAIN APP (either mode) ============ -->
+  <main id="appMain" class="app-main" hidden>
+    <section class="stage-card">
+      <div class="stage-card-head">
+        <button id="btnChangeMode" class="link-btn">⟵ Change Mode</button>
+        <span id="modeTag" class="mode-tag">MODE</span>
+      </div>
+
+      <div id="uploadZone" class="upload-zone" hidden>
+        <span class="upload-icon">🎬</span>
+        <p>Drag &amp; drop a video here</p>
+        <p class="upload-sub">MP4 · MOV · WebM</p>
+        <button id="btnPickFile" class="btn btn-primary">Select Video</button>
+        <input
+          id="fileInput"
+          type="file"
+          accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
+          hidden
+        />
+        <p class="privacy-note">🔒 Local Processing<br />Your video stays on this device.</p>
+        <div id="filmingTips" class="filming-tips"></div>
+      </div>
+
+      <div id="stage" class="stage">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div class="stage-placeholder" id="stagePlaceholder">
+          <span>📷</span>
+          <p>Press "Open Camera" to begin</p>
+        </div>
+      </div>
+
+      <div id="analysisProgress" class="analysis-progress" hidden>
+        <div class="progress-row">
+          <span>Analyzing… <span id="progressPct">0%</span></span>
+          <span id="analysisFps" class="fps-tag">-- FPS</span>
+        </div>
+        <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+      </div>
+      <div id="analysisComplete" class="analysis-complete" hidden>✅ Analysis Complete</div>
+
+      <div class="status-row">
+        <span id="statusLine" class="status-line">Idle</span>
+        <span id="sideTag" class="side-tag" data-state="off">NO SIGNAL</span>
+      </div>
+      <div id="errorBanner" class="error-banner" hidden></div>
+
+      <!-- Webcam mode controls -->
+      <div id="webcamControls" class="controls">
+        <button id="btnCamera" class="btn btn-primary">Open Camera</button>
+        <button id="btnStart" class="btn btn-accent" disabled>Start Training</button>
+        <button id="btnStop" class="btn btn-warn" disabled>Stop Training</button>
+        <button id="btnRestart" class="btn btn-ghost" disabled>Restart</button>
+      </div>
+
+      <!-- Video mode controls -->
+      <div id="videoControls" class="controls" hidden>
+        <button id="btnPlay" class="btn btn-ghost" disabled>▶ Play</button>
+        <button id="btnPause" class="btn btn-ghost" disabled>⏸ Pause</button>
+        <button id="btnSeekStart" class="btn btn-ghost" disabled>↺ Start</button>
+        <button id="btnAnalyze" class="btn btn-accent" disabled>🔍 Start Analysis</button>
+      </div>
+
+      <div id="timelineWrap" class="timeline-wrap" hidden>
+        <span class="metric-label">ANALYSIS TIMELINE</span>
+        <div id="timeline" class="timeline"></div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="panel-card metric-hero">
+        <div class="metric-hero-main">
+          <span class="metric-label">REP COUNT</span>
+          <span id="repCount" class="metric-huge">0</span>
+        </div>
+        <div class="metric-hero-side">
+          <span class="metric-label">PHASE</span>
+          <span id="phaseBadge" class="phase-badge" data-phase="STANDING">STANDING</span>
+        </div>
+      </div>
+
+      <div class="panel-card angle-row">
+        <div class="angle-tile">
+          <span class="metric-label">KNEE</span>
+          <span id="kneeAngle" class="metric-value">--</span>
+        </div>
+        <div class="angle-tile">
+          <span class="metric-label">HIP</span>
+          <span id="hipAngle" class="metric-value">--</span>
+        </div>
+        <div class="angle-tile">
+          <span class="metric-label">TRUNK</span>
+          <span id="trunkAngle" class="metric-value">--</span>
+        </div>
+      </div>
+
+      <div class="panel-card feedback-card">
+        <span class="metric-label">COACH FEEDBACK</span>
+        <div id="feedback" class="feedback-text" data-level="neutral">⚪ Stand in frame</div>
+      </div>
+
+      <!-- Webcam mode: live rep log -->
+      <div id="repLogCard" class="panel-card rep-log-card">
+        <span class="metric-label">REP LOG</span>
+        <ul id="repLog" class="rep-log">
+          <li class="rep-empty">No reps recorded yet.</li>
+        </ul>
+      </div>
+
+      <!-- Video mode: clickable rep analysis list -->
+      <div id="repAnalysisCard" class="panel-card rep-log-card" hidden>
+        <span class="metric-label">REP ANALYSIS</span>
+        <ul id="repAnalysisList" class="rep-log rep-analysis-list">
+          <li class="rep-empty">Upload a video and press "Start Analysis".</li>
+        </ul>
+      </div>
+
+      <!-- Video mode: session report + chart (inline, not a blocking modal) -->
+      <div id="sessionReportCard" class="panel-card session-report-card" hidden>
+        <span class="metric-label">SESSION REPORT</span>
+        <div id="sessionReportBody"></div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Webcam mode: end-of-session modal summary -->
+  <div id="summaryOverlay" class="summary-overlay" hidden>
+    <div class="summary-modal">
+      <h2>Session Summary</h2>
+      <div id="summaryBody"></div>
+      <div class="summary-actions">
+        <button id="btnCloseSummary" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
