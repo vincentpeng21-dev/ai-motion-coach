@@ -124,5 +124,5 @@ export const CONFIG = {
   // which plenty of otherwise-fine GPUs don't expose — it fails with a
   // generic "Unable to find a compatible GPU" even though WebGPU itself
   // works. f32 is ~1GB (vs ~500MB) but runs on any WebGPU-capable GPU.
-  aiCoachModelId: "Qwen2.5-0.5B-Instruct-q4f32_1-MLC",
+  aiCoachModelId: "Qwen2.5-3B-Instruct-q4f32_1-MLC",
 };

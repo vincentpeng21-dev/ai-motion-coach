@@ -16,6 +16,7 @@
 // ============================================================
 
 import { CONFIG } from "./config.js";
+import { computeQualityScore } from "./report.js";
 
 let enginePromise = null;
 
@@ -93,6 +94,7 @@ export function buildSourceData(summary, cfg) {
     bottomAngle: cfg.bottomAngle,
     goodDepthAngle: cfg.goodDepthAngle,
     reps: summary.reps.map((r) => ({ index: r.index, minKnee: r.minKnee, duration: r.duration })),
+    qualityScore: computeQualityScore(summary, cfg),
   };
 }
 
@@ -101,6 +103,11 @@ function buildMessages(src) {
     .map((r) => `第${r.index}下：最低膝角 ${Math.round(r.minKnee)}°，耗時 ${r.duration.toFixed(1)} 秒`)
     .join("；");
   const trends = src.trendNotes.length ? src.trendNotes.join("；") : "無明顯趨勢";
+
+  const qs = src.qualityScore;
+  const scoreLine = qs
+    ? `動作品質評分：${qs.total}/100（深度 ${qs.breakdown.depth}/25、一致性 ${qs.breakdown.consistency}/25、節奏 ${qs.breakdown.tempo}/25、穩定性 ${qs.breakdown.stability}/25）`
+    : "";
 
   return [
     {
@@ -117,10 +124,11 @@ function buildMessages(src) {
 平均最低膝角：${Math.round(src.avgDepth)}°
 最深一下：${Math.round(src.deepest)}°
 一致性：${Math.round(src.consistencyPct)}%
+${scoreLine}
 規則系統偵測到的趨勢：${trends}
 每一下明細：${repsLine}
 
-請給我簡短講評。`,
+請給我簡短講評，針對最弱的分項給出一個具體建議。不要重複列出任何數字，只說明觀察到的問題和改善方向。`,
     },
   ];
 }

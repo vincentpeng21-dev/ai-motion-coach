@@ -14,12 +14,14 @@ import {
   renderFilmingTipsHTML,
   computeTrackingQuality,
   computeZeroRepDiagnostics,
+  computeQualityScore,
 } from "./report.js";
 import {
   supported as aiCoachSupported,
   generateCommentary as generateAiCommentary,
   generateNoRepCommentary,
 } from "./aiCoach.js";
+import { saveSession, getSessions, updateSessionCommentary, clearHistory } from "./sessionHistory.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -52,6 +54,10 @@ export const els = {
 
   stage: $("stage"),
   stagePlaceholder: $("stagePlaceholder"),
+
+  historyCard: $("historyCard"),
+  historyList: $("historyList"),
+  btnClearHistory: $("btnClearHistory"),
 };
 
 // Rendered once — the upload zone shows these BEFORE the user records/
@@ -202,6 +208,125 @@ export function renderTimeline(analysisFrames, duration, cfg, onSeek) {
 }
 
 // ---------------------------------------------------------
+// Quality Score Card
+// ---------------------------------------------------------
+function scoreGrade(total) {
+  if (total >= 90) return { label: "S", text: "頂尖" };
+  if (total >= 80) return { label: "A", text: "優秀" };
+  if (total >= 70) return { label: "B", text: "良好" };
+  if (total >= 60) return { label: "C", text: "尚可" };
+  if (total >= 50) return { label: "D", text: "需改善" };
+  return { label: "F", text: "需加強" };
+}
+
+function scoreColor(total) {
+  if (total >= 90) return "#39ffb0";
+  if (total >= 80) return "#3da9fc";
+  if (total >= 70) return "#7ed0a3";
+  if (total >= 60) return "#ffb020";
+  return "#ff5470";
+}
+
+function renderQualityScoreHTML(score) {
+  if (!score) return "";
+  const { label, text } = scoreGrade(score.total);
+  const color = scoreColor(score.total);
+  const dims = [
+    { label: "深度", key: "depth" },
+    { label: "一致性", key: "consistency" },
+    { label: "節奏", key: "tempo" },
+    { label: "穩定性", key: "stability" },
+  ];
+  const barsHTML = dims
+    .map((d) => {
+      const val = score.breakdown[d.key];
+      const pct = (val / 25) * 100;
+      return `
+        <div class="score-dim-row">
+          <span class="score-dim-label">${d.label}</span>
+          <div class="score-bar"><div class="score-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+          <span class="score-dim-val">${val}/25</span>
+        </div>`;
+    })
+    .join("");
+  return `
+    <div class="quality-score-card">
+      <div class="score-header">
+        <div>
+          <span class="metric-label">QUALITY SCORE</span>
+          <div class="score-big" style="color:${color}">${score.total}<span class="score-slash">/100</span></div>
+        </div>
+        <div class="score-grade" style="border-color:${color};color:${color}">
+          ${label}<span class="score-grade-text">${text}</span>
+        </div>
+      </div>
+      <div class="score-dims">${barsHTML}</div>
+    </div>`;
+}
+
+// ---------------------------------------------------------
+// Session History
+// ---------------------------------------------------------
+function formatTimestamp(iso) {
+  const d = new Date(iso);
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${mo}/${da} ${hh}:${mm}`;
+}
+
+function renderHistoryCard() {
+  const sessions = getSessions();
+  if (!sessions.length) {
+    els.historyCard.hidden = true;
+    return;
+  }
+  els.historyCard.hidden = false;
+  els.historyList.innerHTML = sessions
+    .map((s, i) => {
+      const qs = s.qualityScore;
+      const score = qs ? qs.total : null;
+      const color = score == null ? "var(--text-dim)" : scoreColor(score);
+      const grade = score != null ? scoreGrade(score) : null;
+
+      // trend vs next entry (which is older, since newest-first)
+      let trendHTML = "";
+      if (qs && i + 1 < sessions.length && sessions[i + 1].qualityScore) {
+        const diff = qs.total - sessions[i + 1].qualityScore.total;
+        if (diff > 0) trendHTML = `<span class="hist-trend up">↑ +${diff}</span>`;
+        else if (diff < 0) trendHTML = `<span class="hist-trend down">↓ ${diff}</span>`;
+        else trendHTML = `<span class="hist-trend flat">— 持平</span>`;
+      }
+
+      const commentary = s.aiCommentary
+        ? `<p class="hist-commentary">"${s.aiCommentary.slice(0, 60)}${s.aiCommentary.length > 60 ? "…" : ""}"</p>`
+        : "";
+
+      return `
+        <div class="hist-item">
+          <div class="hist-row">
+            ${score != null ? `<span class="hist-score" style="color:${color}">${score}<span class="hist-score-grade">${grade.label}</span></span>` : `<span class="hist-score" style="color:var(--text-dim)">—</span>`}
+            <div class="hist-meta">
+              <span class="hist-date">${formatTimestamp(s.timestamp)}</span>
+              <span class="hist-stats">${s.totalReps} 下 · 平均膝角 ${Math.round(s.avgDepth)}° · 一致性 ${Math.round(s.consistencyPct)}%</span>
+            </div>
+            ${trendHTML}
+          </div>
+          ${commentary}
+        </div>`;
+    })
+    .join("");
+}
+
+if (els.btnClearHistory) {
+  els.btnClearHistory.addEventListener("click", () => {
+    clearHistory();
+    renderHistoryCard();
+  });
+}
+
+// ---------------------------------------------------------
 // Session Report (Section 九/十)
 // ---------------------------------------------------------
 const AI_COACH_BOX_HTML = `
@@ -246,6 +371,7 @@ export function renderSessionReport(summary, cfg, trackingQuality = 1, analysisF
       ${AI_COACH_BOX_HTML}
     `;
     const diagnostics = computeZeroRepDiagnostics(analysisFrames);
+    renderHistoryCard();
     wireAiCoachButton({
       generate: (hooks) => generateNoRepCommentary(diagnostics, trackingQuality, cfg, hooks),
       renderSource: renderNoRepSourceHTML,
@@ -254,9 +380,11 @@ export function renderSessionReport(summary, cfg, trackingQuality = 1, analysisF
   }
 
   const trends = (summary.trendNotes || []).map((t) => `<p class="summary-trend">⚠️ ${t}</p>`).join("");
+  const qualityScore = computeQualityScore(summary, cfg);
 
   els.sessionReportBody.innerHTML = `
     ${tipsBox}
+    ${renderQualityScoreHTML(qualityScore)}
     <div class="summary-grid">
       <div class="summary-tile">
         <span class="summary-label">Total Reps</span>
@@ -290,9 +418,21 @@ export function renderSessionReport(summary, cfg, trackingQuality = 1, analysisF
   const canvas = document.getElementById("repChart");
   if (canvas) drawRepChart(canvas, summary.reps, cfg);
 
+  const savedSession = saveSession({
+    totalReps: summary.totalReps,
+    avgRepTime: summary.avgRepTime,
+    avgDepth: summary.avgDepth,
+    deepest: summary.deepest,
+    consistencyPct: summary.consistencyPct,
+    trendNotes: summary.trendNotes || [],
+    qualityScore,
+  });
+  renderHistoryCard();
+
   wireAiCoachButton({
     generate: (hooks) => generateAiCommentary(summary, cfg, hooks),
     renderSource: renderSourceHTML,
+    sessionId: savedSession.id,
   });
 }
 
@@ -323,6 +463,7 @@ function renderSourceHTML(src) {
         <li>判定門檻：達標 ${src.bottomAngle}°／理想深度 ${src.goodDepthAngle}° 以下</li>
         <li>規則系統偵測到的趨勢：${escapeHtml(trends)}</li>
         <li>逐下明細（膝角/耗時）：${escapeHtml(repsLine)}</li>
+        ${src.qualityScore ? `<li>動作品質評分：${src.qualityScore.total}/100（深度 ${src.qualityScore.breakdown.depth}／一致性 ${src.qualityScore.breakdown.consistency}／節奏 ${src.qualityScore.breakdown.tempo}／穩定性 ${src.qualityScore.breakdown.stability}）</li>` : ""}
       </ul>
     </details>
   `;
@@ -351,7 +492,7 @@ function renderNoRepSourceHTML(src) {
  *        generateAiCommentary(summary, cfg, hooks) or generateNoRepCommentary(diagnostics, quality, cfg, hooks)
  * @param {(sourceData:object)=>string} opts.renderSource  matching source-data renderer
  */
-function wireAiCoachButton({ generate, renderSource }) {
+function wireAiCoachButton({ generate, renderSource, sessionId }) {
   const btn = document.getElementById("btnAiCoach");
   const output = document.getElementById("aiCoachOutput");
   if (!btn || !output) return;
@@ -380,6 +521,10 @@ function wireAiCoachButton({ generate, renderSource }) {
         <p class="ai-coach-disclaimer">由本機端小型語言模型（非醫療/專業教練）根據上方數據生成，僅供參考。</p>
       `;
       btn.textContent = "🔄 重新產生講評";
+      if (sessionId) {
+        updateSessionCommentary(sessionId, text);
+        renderHistoryCard();
+      }
     } catch (err) {
       console.error("[aiCoach]", err);
       output.innerHTML = `<p class="ai-coach-error">⚠️ AI 講評產生失敗：${escapeHtml(err.message || String(err))}</p>`;

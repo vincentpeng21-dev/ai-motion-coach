@@ -160,6 +160,15 @@
         <span class="metric-label">SESSION REPORT</span>
         <div id="sessionReportBody"></div>
       </div>
+
+      <!-- Session history (video mode, persisted in localStorage) -->
+      <div id="historyCard" class="panel-card history-card" hidden>
+        <div class="history-header">
+          <span class="metric-label">SESSION HISTORY</span>
+          <button id="btnClearHistory" class="link-btn danger-link">清除全部</button>
+        </div>
+        <div id="historyList"></div>
+      </div>
     </aside>
   </main>
 
