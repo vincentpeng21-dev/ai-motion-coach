@@ -137,3 +137,50 @@ Playwright 全域沒裝在專案裡（這是純靜態專案，沒有 `package.js
 - [ ] 在 M2 Mac 上驗證 AI Coach Commentary 能不能正常生成（目前 Windows 機器卡在 GPU adapter 問題）
 - 真人影片的姿態辨識準確度只在使用者自己的實機測試過幾次（gym 環境、非純側面角度、有鏡子反光跟頭髮甩動，追蹤品質不穩定，已加拍攝建議 UI 提示使用者怎麼拍比較準）
 - 沒有自動化測試涵蓋「真人做深蹲」這個情境（合成測試影片沒有真人可用），改動 `squatDetector.js` 邏輯後務必請使用者用真實影片複測
+
+## iOS/Swift 移植計畫（尚未開始，Mac 上要做的下一件大事）
+
+使用者想把這個 prototype 做成 iPhone App，討論過 PWA / Capacitor 包殼 / 原生重寫三個選項，**已定案走原生 Swift**（用 Apple 內建的 Vision framework 做姿態偵測，不是把 MediaPipe 搬過去）。這件事只能在 Mac 上做（需要 Xcode，Windows 沒有工具鏈），這裡先把範圍和技術選型定下來，避免到 Mac 上要重新討論一次。
+
+### 範圍（已確認）
+- ✅ Webcam 即時分析
+- ✅ 影片上傳分析
+- ❌ AI Coach Commentary 先不做（iOS 上要做本機 LLM 講評技術難度最高，等前兩個模式穩定後再考慮，屆時要查 Core ML / Apple Intelligence Foundation Models 能不能用）
+- 上架 App Store 也先不做，第一階段只求能在使用者自己的 iPhone 上跑（用免費 Apple ID 透過 Xcode 直接裝置安裝即可，不用付 $99/年 Developer Program；缺點是簽章 7 天過期，開發期間常常重新 build 不是問題）
+
+### 技術選型
+- **UI**：SwiftUI
+- **姿態偵測**：`Vision` framework 的 `VNDetectHumanBodyPoseRequest`（iOS 14+），本機執行、有 Neural Engine 加速，不需要任何外部模型下載。回傳的身體關鍵點包含左右 shoulder/hip/knee/ankle，跟目前 JS 版用的關節對得起來。
+  - ⚠️ **座標系統跟 MediaPipe 不一樣**：`VNRecognizedPoint` 是「原點在左下角、Y 軸向上」的正規化座標，MediaPipe landmarks 是「原點在左上角、Y 軸向下」。角度計算/骨架繪製如果直接照搬 JS 版的公式，Y 軸方向會反過來，trunk angle 那類跟垂直方向比較的計算尤其容易出錯——**port 過去時要先確認/測試這個座標轉換，不要當作理所當然**。
+  - 每個關節有 `.confidence`（對應 JS 版的 `visibility`）
+- **即時攝影機**：`AVFoundation`（`AVCaptureSession` + `AVCaptureVideoDataOutput`），每一幀丟給 Vision 做偵測
+- **影片上傳分析**：`PhotosPicker` 或檔案選擇器拿到影片 → `AVAssetReader` 逐幀讀取 → 一樣丟給 Vision，邏輯上對應 JS 版的 `videoAnalysisController.js`
+
+### 架構原則（延續 JS 版，不要重新設計）
+沿用同一套分層，Input Layer 換成 Swift 對應物件即可，中間分析邏輯盡量**忠實 port**（尤其 `squatDetector.js` 的狀態機門檻和防抖邏輯已經調過好幾輪、行為已驗證過，直接照搬數字和邏輯，不要憑感覺重寫）：
+
+```
+Input Layer
+ ├── CameraInput (AVCaptureSession)
+ └── VideoFileInput (AVAssetReader)
+        ↓
+PoseEngine (VNDetectHumanBodyPoseRequest 包裝)
+        ↓
+MotionAnalyzer (座標轉換 + landmark 平滑 + 角度計算 — 對應 motionAnalyzer.js + angles.js)
+        ↓
+SquatDetector (狀態機，直接照搬 squatDetector.js 的邏輯與門檻值)
+        ↓
+Results
+        ↓
+SwiftUI Views（即時畫面 / 影片分析報告畫面）
+```
+
+CONFIG 那些門檻值（`standingAngle`、`descendingAngle`、`bottomAngle`、`stateHoldFrames`…）直接照抄 `js/config.js` 現有數值當起點，不要重新調參。
+
+### 建議專案結構
+在同一個 git repo 裡加一個 `ios/AIMotionCoach/` 資料夾放 Xcode 專案，跟網頁版（repo 根目錄）並存，不要開新 repo——這樣共用同一份「已驗證過的邏輯規格」跟 git 歷史，之後兩邊各自演進也還查得到彼此的關聯。
+
+### 在 Mac 上怎麼測（不用等我盲寫完才發現不能編譯）
+- `xcodebuild build`（或 `xcodebuild test`）command line 直接編譯，编譯錯誤當場修，不要等使用者手動開 Xcode 才發現
+- 影片上傳模式可以在 **iOS Simulator** 測（`xcrun simctl`），不需要實機，因為只是讀影片檔不需要真的攝影機
+- Webcam 即時模式一定要**實機測試**（Simulator 沒有真的攝影機），透過 USB 或同 WiFi 無線偵錯裝到使用者的 iPhone 上
