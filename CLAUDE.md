@@ -145,7 +145,9 @@ Playwright 全域沒裝在專案裡（這是純靜態專案，沒有 `package.js
 ### 範圍（已確認）
 - ✅ Webcam 即時分析
 - ✅ 影片上傳分析
-- ❌ AI Coach Commentary 先不做（iOS 上要做本機 LLM 講評技術難度最高，等前兩個模式穩定後再考慮，屆時要查 Core ML / Apple Intelligence Foundation Models 能不能用）
+- ❌ AI Coach Commentary 先不做，等 Webcam + 影片上傳兩個模式穩定後再加。**已有初步研究結論**（測試機是 iPhone 13）：
+  - Apple 官方的 **Apple Intelligence / Foundation Models framework** 用不了——只支援 iPhone 15 Pro 以上（需要 A17 Pro），iPhone 13（A15）不在支援名單內，直接排除
+  - 可行方案是比照網頁版 WebLLM 的做法：**自己包一個小型 LLM 進 App**，用 **Core ML** 或 **llama.cpp（走 Metal GPU 加速）**在裝置上跑，不受 Apple Intelligence 硬體限制。設計原則跟網頁版 `aiCoach.js` 一樣：AI 只讀規則引擎算好的統計數字，絕不碰原始影像/關節座標，不影響 rep 計數。代價是 App 體積會變大（模型檔案幾百 MB 到 1GB，跟網頁版下載量級相近），且需要額外工程把模型轉 Core ML 格式或整合 llama.cpp
 - 上架 App Store 也先不做，第一階段只求能在使用者自己的 iPhone 上跑（用免費 Apple ID 透過 Xcode 直接裝置安裝即可，不用付 $99/年 Developer Program；缺點是簽章 7 天過期，開發期間常常重新 build 不是問題）
 
 ### 技術選型
