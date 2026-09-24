@@ -25,6 +25,15 @@ export const CONFIG = {
   // Also used as the model's own min detection/presence/tracking confidence.
   confidenceThreshold: 0.5,
 
+  // Minimum PER-JOINT visibility for each of shoulder/hip/knee/ankle
+  // individually. Guards against a single badly-occluded joint (e.g. an
+  // ankle hidden behind a barbell/machine) dragging the *average* below
+  // confidenceThreshold's gate while the other three joints look fine —
+  // averaging alone can't catch that, so each joint gets its own floor.
+  // Also used by LandmarkSmoother to freeze a joint's smoothed position
+  // instead of chasing a low-confidence (likely garbage) raw guess.
+  jointMinVisibility: 0.3,
+
   // ---------------------------------------------------------
   // Smoothing (Step 4)
   // ---------------------------------------------------------
@@ -42,10 +51,31 @@ export const CONFIG = {
   bottomAngle: 110, // knee angle <= this counts as "good depth"
   ascendingHysteresis: 5, // knee must rise this many degrees off its lowest point to confirm the ascent has started
 
-  // A condition must hold for this many *consecutive* frames before the
+  // standingAngle/deadlift.standingHipAngle assume a camera height/angle
+  // where a fully upright person reads close to that absolute value. Real
+  // footage varies a lot with camera position — observed on real user
+  // video, a genuinely standing person measured only ~131° knee angle, so
+  // "returned to standing" (needed to both reset between reps AND
+  // complete a counted rep) could NEVER be confirmed, silently making
+  // every rep uncountable regardless of depth. Each detector now
+  // self-calibrates its own "standing" threshold per session from the
+  // highest angle actually observed, using this margin below that peak —
+  // see _effectiveStandingAngle() / _effectiveStandingHipAngle().
+  standingCalibrationMargin: 15,
+
+  // A condition must hold for at least this many REAL seconds before the
   // state machine commits to it — this is what stops the phase flickering
-  // when the smoothed angle sits right on a threshold.
-  stateHoldFrames: 5,
+  // when the smoothed angle sits right on a threshold. Deliberately
+  // time-based rather than a frame COUNT: webcam mode samples at ~30fps,
+  // but the automated video-upload analysis pass samples far more
+  // sparsely (and its rate varies with device/video resolution/perf) —
+  // a fixed frame count meant a fixed real-world duration on webcam but
+  // a wildly larger, often rep-length-exceeding duration on sparse video
+  // analysis, making it structurally impossible for a real rep's brief
+  // DESCENDING/BOTTOM/ASCENDING phases to ever accumulate enough sampled
+  // frames to complete, even with perfect depth and tracking. Time-based
+  // holds behave identically in spirit at any sampling rate.
+  stateHoldSeconds: 0.15,
 
   // A completed STANDING→DESCENDING→BOTTOM→ASCENDING→STANDING cycle only
   // counts as a rep if its total duration falls in this window.
@@ -107,6 +137,17 @@ export const CONFIG = {
   // trustworthy pose, surface the filming tips again after analysis —
   // the low rep count is probably a filming/tracking issue, not the user.
   filmingTipsQualityThreshold: 0.7,
+
+  // ---------------------------------------------------------
+  // Deadlift state machine thresholds — hip angle in degrees.
+  // shoulder→hip→knee angle: ~170° standing, smaller = deeper hinge.
+  // ---------------------------------------------------------
+  deadlift: {
+    standingHipAngle:   155, // hip angle >= this = standing / locked out
+    descendingHipAngle: 140, // must drop below this to confirm a real hinge
+    bottomHipAngle:      90, // hip angle <= this = reached bottom depth
+    goodDepthHipAngle:   75, // ideal depth target (🟢 threshold)
+  },
 
   // ---------------------------------------------------------
   // Optional AI Coach Commentary (opt-in, Session Report only)

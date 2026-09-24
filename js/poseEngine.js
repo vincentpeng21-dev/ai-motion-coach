@@ -67,10 +67,25 @@ export const POSE_CONNECTIONS = [
  * into the same `detect()` call; the engine itself doesn't know or care
  * which input source a frame came from.
  */
+// Modern phones default to 4K (e.g. 2160x3840 portrait) recording. Feeding
+// that directly into the pose model makes each inference call expensive
+// enough to block the main thread for long stretches — which starves
+// requestVideoFrameCallback of chances to fire, since the browser only
+// hands us a new frame once we're free again. The result is the automated
+// video-analysis pass silently sampling far more sparsely than its
+// configured target/floor FPS (observed: ~1 sample/sec on a 31s 4K clip,
+// well under the 5fps floor), easily missing the exact instant a rep
+// bottoms out. Downscaling first keeps inference fast regardless of the
+// source's native resolution — MediaPipe's own accuracy doesn't need
+// anywhere near 4K input for body landmarks.
+const MAX_INFERENCE_DIM = 960;
+
 export class PoseEngine {
   constructor() {
     this.landmarker = null;
     this._tsCounter = 0;
+    this._scratchCanvas = document.createElement("canvas");
+    this._scratchCtx = this._scratchCanvas.getContext("2d", { willReadFrequently: true });
   }
 
   get ready() {
@@ -119,7 +134,24 @@ export class PoseEngine {
   detect(mediaElement) {
     if (!this.landmarker) return null;
     this._tsCounter += 1;
-    const result = this.landmarker.detectForVideo(mediaElement, this._tsCounter);
+
+    const srcW = mediaElement.videoWidth || mediaElement.naturalWidth || mediaElement.width || 0;
+    const srcH = mediaElement.videoHeight || mediaElement.naturalHeight || mediaElement.height || 0;
+    let input = mediaElement;
+
+    if (srcW && srcH && Math.max(srcW, srcH) > MAX_INFERENCE_DIM) {
+      const scale = MAX_INFERENCE_DIM / Math.max(srcW, srcH);
+      const w = Math.round(srcW * scale);
+      const h = Math.round(srcH * scale);
+      if (this._scratchCanvas.width !== w || this._scratchCanvas.height !== h) {
+        this._scratchCanvas.width = w;
+        this._scratchCanvas.height = h;
+      }
+      this._scratchCtx.drawImage(mediaElement, 0, 0, w, h);
+      input = this._scratchCanvas;
+    }
+
+    const result = this.landmarker.detectForVideo(input, this._tsCounter);
     return (result.landmarks && result.landmarks[0]) || null;
   }
 }
@@ -132,14 +164,23 @@ export class PoseEngine {
 export function selectSide(landmarks) {
   const vis = (i) => landmarks[i]?.visibility ?? 0;
 
-  const leftVis =
-    (vis(LM.LEFT_SHOULDER) + vis(LM.LEFT_HIP) + vis(LM.LEFT_KNEE) + vis(LM.LEFT_ANKLE)) / 4;
-  const rightVis =
-    (vis(LM.RIGHT_SHOULDER) + vis(LM.RIGHT_HIP) + vis(LM.RIGHT_KNEE) + vis(LM.RIGHT_ANKLE)) / 4;
+  const leftJoints = [LM.LEFT_SHOULDER, LM.LEFT_HIP, LM.LEFT_KNEE, LM.LEFT_ANKLE];
+  const rightJoints = [LM.RIGHT_SHOULDER, LM.RIGHT_HIP, LM.RIGHT_KNEE, LM.RIGHT_ANKLE];
+
+  const leftVis = leftJoints.reduce((s, i) => s + vis(i), 0) / 4;
+  const rightVis = rightJoints.reduce((s, i) => s + vis(i), 0) / 4;
 
   const side = leftVis >= rightVis ? "left" : "right";
   const confidence = side === "left" ? leftVis : rightVis;
-  const visible = confidence >= CONFIG.confidenceThreshold;
+  const joints = side === "left" ? leftJoints : rightJoints;
+
+  // The AVERAGE passing the threshold isn't enough: one occluded joint
+  // (e.g. an ankle hidden behind a barbell) can still average out to a
+  // "confident enough" side while its own position is garbage, silently
+  // corrupting the angle computed from it. Require every joint in the
+  // chain to individually clear a floor too.
+  const allJointsTrustworthy = joints.every((i) => vis(i) >= CONFIG.jointMinVisibility);
+  const visible = confidence >= CONFIG.confidenceThreshold && allJointsTrustworthy;
 
   const idx =
     side === "left"
@@ -184,11 +225,18 @@ export class LandmarkSmoother {
       if (!this.x[i]) this.x[i] = new EMA(this.alpha);
       if (!this.y[i]) this.y[i] = new EMA(this.alpha);
       const raw = landmarks[i];
-      out[i] = {
-        x: this.x[i].next(raw.x),
-        y: this.y[i].next(raw.y),
-        visibility: raw.visibility,
-      };
+
+      // A landmark MediaPipe itself is unsure about (occluded by a
+      // barbell, machine frame, etc.) is more likely noise than signal.
+      // Feeding that raw guess into the EMA drags the smoothed point
+      // toward garbage; instead freeze it at its last trustworthy
+      // position and let `visibility` (still the real raw value) do the
+      // job of flagging this joint as unreliable downstream.
+      const trustworthy = (raw.visibility ?? 0) >= CONFIG.jointMinVisibility;
+      const x = trustworthy ? this.x[i].next(raw.x) : this.x[i].value ?? raw.x;
+      const y = trustworthy ? this.y[i].next(raw.y) : this.y[i].value ?? raw.y;
+
+      out[i] = { x, y, visibility: raw.visibility };
     }
     return out;
   }

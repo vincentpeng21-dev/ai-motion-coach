@@ -23,17 +23,26 @@
 
   <!-- ============ MODE SELECT ============ -->
   <section id="modeSelect" class="mode-select">
-    <h1 class="mode-select-title">Choose an input mode</h1>
+    <div class="exercise-selector">
+      <p class="mode-select-label">選擇動作 · Exercise</p>
+      <div class="exercise-pills">
+        <button class="exercise-pill active" data-exercise="squat">🦵 深蹲 Squat</button>
+        <button class="exercise-pill" data-exercise="deadlift">💪 硬舉 Deadlift</button>
+      </div>
+      <p class="exercise-current" id="exerciseCurrentLabel">目前選擇：🦵 深蹲 Squat</p>
+    </div>
+
+    <p class="mode-select-label">選擇輸入模式 · Input Mode</p>
     <div class="mode-cards">
       <button id="modeWebcamBtn" class="mode-card">
         <span class="mode-card-icon">📷</span>
         <span class="mode-card-title">Webcam Live Analysis</span>
-        <span class="mode-card-sub">Real-time squat coaching from your camera</span>
+        <span class="mode-card-sub">Real-time coaching from your camera</span>
       </button>
       <button id="modeVideoBtn" class="mode-card">
         <span class="mode-card-icon">🎬</span>
         <span class="mode-card-title">Video Upload Analysis</span>
-        <span class="mode-card-sub">Analyze a recorded squat set, rep by rep</span>
+        <span class="mode-card-sub">Analyze a recorded set, rep by rep</span>
       </button>
     </div>
   </section>

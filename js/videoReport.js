@@ -10,6 +10,7 @@ import {
   formatTime,
   buildTimeline,
   repDepthLevel,
+  deadliftDepthLevel,
   drawRepChart,
   renderFilmingTipsHTML,
   computeTrackingQuality,
@@ -154,20 +155,24 @@ export function wireUpload({ onFile }) {
 // ---------------------------------------------------------
 // Rep Analysis list (Section 七) — click to seek
 // ---------------------------------------------------------
-export function renderRepAnalysisList(reps, cfg, onSeek) {
+export function renderRepAnalysisList(reps, cfg, onSeek, exercise = "squat") {
   if (!reps.length) {
     els.repAnalysisList.innerHTML = `<li class="rep-empty">No reps detected yet.</li>`;
     return;
   }
+  const isDL = exercise === "deadlift";
   els.repAnalysisList.innerHTML = reps
     .map((r) => {
-      const level = repDepthLevel(r, cfg);
+      const level = isDL ? deadliftDepthLevel(r, cfg) : repDepthLevel(r, cfg);
       const dot = level === "good" ? "🟢" : "🟡";
+      const depthLabel = isDL
+        ? `Min Hip ${Math.round(r.minHip)}°`
+        : `Min Knee ${Math.round(r.minKnee)}°`;
       return `
       <li class="rep-clickable" data-start="${r.startTime}">
         <span class="rep-idx">${dot} #${r.index}</span>
         <span class="rep-detail">${formatTime(r.startTime)} – ${formatTime(r.endTime)}</span>
-        <span class="rep-detail">Min Knee ${Math.round(r.minKnee)}°</span>
+        <span class="rep-detail">${depthLabel}</span>
       </li>`;
     })
     .join("");
@@ -309,7 +314,7 @@ function renderHistoryCard() {
             ${score != null ? `<span class="hist-score" style="color:${color}">${score}<span class="hist-score-grade">${grade.label}</span></span>` : `<span class="hist-score" style="color:var(--text-dim)">—</span>`}
             <div class="hist-meta">
               <span class="hist-date">${formatTimestamp(s.timestamp)}</span>
-              <span class="hist-stats">${s.totalReps} 下 · 平均膝角 ${Math.round(s.avgDepth)}° · 一致性 ${Math.round(s.consistencyPct)}%</span>
+              <span class="hist-stats">${s.totalReps} 下 · 平均${s.exercise === "deadlift" ? "髖角" : "膝角"} ${Math.round(s.avgDepth)}° · 一致性 ${Math.round(s.consistencyPct)}%</span>
             </div>
             ${trendHTML}
           </div>
@@ -348,7 +353,13 @@ const AI_COACH_BOX_HTML = `
  *                                     something concrete (min knee observed, duration covered)
  *                                     for the AI commentary to work with — never invented data.
  */
-export function renderSessionReport(summary, cfg, trackingQuality = 1, analysisFrames = []) {
+export function renderSessionReport(summary, cfg, trackingQuality = 1, analysisFrames = [], exercise = "squat") {
+  const ex = summary ? summary.exercise || exercise : exercise;
+  const isDL = ex === "deadlift";
+  const exerciseLabel = isDL ? "deadlift" : "squat";
+  const depthLabel = isDL ? "Avg Min Hip" : "Avg Min Knee";
+  const angleTracking = isDL ? "hip-angle" : "knee-angle";
+
   const lowQuality = trackingQuality < cfg.filmingTipsQualityThreshold;
   const tipsBox = lowQuality
     ? `<p class="summary-trend">⚠️ 這段影片的追蹤品質偏低（約 ${Math.round(
@@ -363,17 +374,17 @@ export function renderSessionReport(summary, cfg, trackingQuality = 1, analysisF
   if (!summary) {
     const reason = lowQuality
       ? "No reps were detected — likely because tracking quality was too low (see below)."
-      : "No complete squat was detected. Check the timeline below for where the movement started, or the depth may not have reached the counted threshold.";
+      : `No complete ${exerciseLabel} was detected. Check the timeline below for where the movement started, or the depth may not have reached the counted threshold.`;
     const tips = lowQuality ? tipsBox : renderFilmingTipsHTML({ compact: true });
     els.sessionReportBody.innerHTML = `
       <p class="rep-empty">${reason}</p>
       ${tips}
       ${AI_COACH_BOX_HTML}
     `;
-    const diagnostics = computeZeroRepDiagnostics(analysisFrames);
+    const diagnostics = computeZeroRepDiagnostics(analysisFrames, ex);
     renderHistoryCard();
     wireAiCoachButton({
-      generate: (hooks) => generateNoRepCommentary(diagnostics, trackingQuality, cfg, hooks),
+      generate: (hooks) => generateNoRepCommentary(diagnostics, trackingQuality, cfg, hooks, ex),
       renderSource: renderNoRepSourceHTML,
     });
     return;
@@ -395,7 +406,7 @@ export function renderSessionReport(summary, cfg, trackingQuality = 1, analysisF
         <span class="summary-value">${summary.avgRepTime.toFixed(1)}s</span>
       </div>
       <div class="summary-tile">
-        <span class="summary-label">Avg Min Knee</span>
+        <span class="summary-label">${depthLabel}</span>
         <span class="summary-value">${Math.round(summary.avgDepth)}°</span>
       </div>
       <div class="summary-tile">
@@ -410,15 +421,16 @@ export function renderSessionReport(summary, cfg, trackingQuality = 1, analysisF
     ${trends}
     <span class="metric-label chart-label">REP-BY-REP CHART</span>
     <canvas id="repChart" class="rep-chart"></canvas>
-    <p class="summary-disclaimer">Heuristic prototype metrics based on knee-angle tracking only — not a medical or injury assessment.</p>
+    <p class="summary-disclaimer">Heuristic prototype metrics based on ${angleTracking} tracking only — not a medical or injury assessment.</p>
 
     ${AI_COACH_BOX_HTML}
   `;
 
   const canvas = document.getElementById("repChart");
-  if (canvas) drawRepChart(canvas, summary.reps, cfg);
+  if (canvas) drawRepChart(canvas, summary.reps, cfg, ex);
 
   const savedSession = saveSession({
+    exercise: ex,
     totalReps: summary.totalReps,
     avgRepTime: summary.avgRepTime,
     avgDepth: summary.avgDepth,
@@ -447,9 +459,11 @@ function escapeHtml(str) {
 
 /** Renders the exact structured data the model was given — the "source" behind the commentary. */
 function renderSourceHTML(src) {
+  const isDL = src.exercise === "deadlift";
+  const angleLabel = isDL ? "髖角" : "膝角";
   const trends = src.trendNotes.length ? src.trendNotes.join("；") : "（無）";
   const repsLine = src.reps
-    .map((r) => `#${r.index} ${Math.round(r.minKnee)}°/${r.duration.toFixed(1)}s`)
+    .map((r) => `#${r.index} ${Math.round(r.depth)}°/${r.duration.toFixed(1)}s`)
     .join("、");
   return `
     <details class="ai-coach-source">
@@ -457,13 +471,14 @@ function renderSourceHTML(src) {
       <ul>
         <li>總下數：${src.totalReps}</li>
         <li>平均每下時間：${src.avgRepTime.toFixed(1)} 秒</li>
-        <li>平均最低膝角：${Math.round(src.avgDepth)}°</li>
+        <li>平均最低${angleLabel}：${Math.round(src.avgDepth)}°</li>
         <li>最深一下：${Math.round(src.deepest)}°</li>
         <li>一致性：${Math.round(src.consistencyPct)}%</li>
         <li>判定門檻：達標 ${src.bottomAngle}°／理想深度 ${src.goodDepthAngle}° 以下</li>
         <li>規則系統偵測到的趨勢：${escapeHtml(trends)}</li>
-        <li>逐下明細（膝角/耗時）：${escapeHtml(repsLine)}</li>
+        <li>逐下明細（${angleLabel}/耗時）：${escapeHtml(repsLine)}</li>
         ${src.qualityScore ? `<li>動作品質評分：${src.qualityScore.total}/100（深度 ${src.qualityScore.breakdown.depth}／一致性 ${src.qualityScore.breakdown.consistency}／節奏 ${src.qualityScore.breakdown.tempo}／穩定性 ${src.qualityScore.breakdown.stability}）</li>` : ""}
+        ${src.weakestDimension ? `<li>系統指定給 AI 講評的最弱分項：${src.weakestDimension.label}（${src.weakestDimension.value}/25）</li>` : ""}
       </ul>
     </details>
   `;
@@ -471,16 +486,19 @@ function renderSourceHTML(src) {
 
 /** Renders the "source" for the 0-rep case — sparser, but still real data, never invented. */
 function renderNoRepSourceHTML(src) {
+  const isDL = src.exercise === "deadlift";
+  const angleLabel = isDL ? "髖角" : "膝角";
   const qualityPct = Math.round(src.trackingQuality * 100);
-  const minKneeText = src.minKneeObserved !== null ? `${Math.round(src.minKneeObserved)}°` : "無法判讀（幾乎沒偵測到人）";
+  const minText = src.minObserved !== null ? `${Math.round(src.minObserved)}°` : "無法判讀（幾乎沒偵測到人）";
   return `
     <details class="ai-coach-source">
       <summary>📊 講評依據（本次分析的實際數據）</summary>
       <ul>
         <li>影片涵蓋時長：${src.durationCovered.toFixed(1)} 秒</li>
         <li>追蹤品質（成功偵測到人物的畫面比例）：${qualityPct}%</li>
-        <li>過程中觀察到的最低膝角（不論是否達標）：${minKneeText}</li>
+        <li>過程中觀察到的最低${angleLabel}（不論是否達標）：${minText}</li>
         <li>判定門檻：達標 ${src.bottomAngle}°／理想深度 ${src.goodDepthAngle}° 以下</li>
+        ${src.likelyReason === "depth_was_fine" ? `<li>系統判定：深度已達標，0 下的原因不是深度不足</li>` : ""}
       </ul>
     </details>
   `;

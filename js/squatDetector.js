@@ -22,16 +22,21 @@ export class SquatDetector {
     this.repIndex = 0;
     this._clearHolds();
     this._clearRepTracking();
+    this._observedMaxKnee = null; // session-level standing-angle calibration, see _effectiveStandingAngle()
     this._lastFeedback = { text: "⚪ Stand in frame", level: "neutral" };
     this._pendingText = null;
     this._pendingHold = 0;
   }
 
   _clearHolds() {
-    this._standingHold = 0;
-    this._descendingHold = 0;
-    this._bottomHold = 0;
-    this._ascendingHold = 0;
+    // Timestamps (not counters): each records WHEN its candidate
+    // transition first became true, so the debounce is a fixed real
+    // duration (cfg.stateHoldSeconds) regardless of how many discrete
+    // samples happen to land within it. null = not currently candidate.
+    this._standingSince = null;
+    this._descendingSince = null;
+    this._bottomSince = null;
+    this._ascendingSince = null;
     this._invisibleHold = 0;
   }
 
@@ -43,6 +48,36 @@ export class SquatDetector {
     this._reachedBottom = false;
   }
 
+  /**
+   * cfg.standingAngle (165°) assumes a camera angle/height where a fully
+   * upright person reads close to that. Real gym footage varies a lot —
+   * observed on real user video: knee angle while genuinely standing
+   * measured only ~131° due to camera position, so the person could
+   * NEVER satisfy ">= 165°" to confirm "returned to standing", which is
+   * required both to reset between reps and to complete a counted rep.
+   * That silently made every rep uncountable regardless of depth.
+   * Self-calibrate instead: track the highest knee angle actually
+   * observed this session and use that (minus a margin) as the
+   * "standing" bar, capped at the configured value as an upper bound
+   * (never demand MORE than the ideal, only relax it when the footage
+   * genuinely can't reach it).
+   */
+  _effectiveStandingAngle() {
+    const cfg = this.cfg;
+    if (this._observedMaxKnee === null) return cfg.standingAngle;
+    const calibrated = this._observedMaxKnee - cfg.standingCalibrationMargin;
+    // Floor anchored to bottomAngle (not descendingAngle): descendingAngle
+    // is itself one of the values that can be miscalibrated for a given
+    // camera angle (in the same real footage that motivated this fix, the
+    // observed standing baseline of 131° was already BELOW the configured
+    // descendingAngle of 150° — using descendingAngle+10 as the floor
+    // would have clamped the calibrated value right back to ~160,
+    // silently undoing the calibration). bottomAngle is comparatively
+    // reliable as an absolute depth marker across the real footage tested.
+    const floor = cfg.bottomAngle + 15;
+    return Math.max(floor, Math.min(cfg.standingAngle, calibrated));
+  }
+
   /** Call once when the user presses "Start Training" / "Stop Training". */
   setActive(active) {
     this.active = active;
@@ -52,6 +87,7 @@ export class SquatDetector {
       this.repIndex = 0;
       this._clearHolds();
       this._clearRepTracking();
+      this._observedMaxKnee = null;
     }
   }
 
@@ -83,6 +119,7 @@ export class SquatDetector {
       return this._output();
     }
     this._invisibleHold = 0;
+    this._observedMaxKnee = this._observedMaxKnee === null ? kneeAngle : Math.max(this._observedMaxKnee, kneeAngle);
 
     if (this.phase !== "STANDING") {
       this._minKnee = Math.min(this._minKnee, kneeAngle);
@@ -97,7 +134,7 @@ export class SquatDetector {
         this._handleDescending(kneeAngle, timeSec);
         break;
       case "BOTTOM":
-        this._handleBottom(kneeAngle);
+        this._handleBottom(kneeAngle, timeSec);
         break;
       case "ASCENDING":
         this._handleAscending(kneeAngle, timeSec);
@@ -110,10 +147,10 @@ export class SquatDetector {
   _handleStanding(kneeAngle, timeSec) {
     const cfg = this.cfg;
     if (kneeAngle < cfg.descendingAngle) {
-      this._descendingHold++;
-      if (this._descendingHold >= cfg.stateHoldFrames) {
+      if (this._descendingSince === null) this._descendingSince = timeSec;
+      if (timeSec - this._descendingSince >= cfg.stateHoldSeconds) {
         this.phase = "DESCENDING";
-        this._descendingHold = 0;
+        this._descendingSince = null;
         this._repStartTime = timeSec;
         this._minKnee = kneeAngle;
         this._minHip = Infinity;
@@ -121,7 +158,7 @@ export class SquatDetector {
         this._suggest("⬇️ Descending", "info");
       }
     } else {
-      this._descendingHold = 0;
+      this._descendingSince = null;
       this._suggest("🟢 Ready — start your squat", "good");
     }
   }
@@ -130,23 +167,23 @@ export class SquatDetector {
     const cfg = this.cfg;
 
     if (kneeAngle <= cfg.bottomAngle) {
-      this._bottomHold++;
-      if (this._bottomHold >= cfg.stateHoldFrames) {
+      if (this._bottomSince === null) this._bottomSince = timeSec;
+      if (timeSec - this._bottomSince >= cfg.stateHoldSeconds) {
         this.phase = "BOTTOM";
-        this._bottomHold = 0;
+        this._bottomSince = null;
         this._reachedBottom = true;
         this._bottomTime = timeSec;
         this._suggest("🟢 Good depth", "good");
         return;
       }
     } else {
-      this._bottomHold = 0;
+      this._bottomSince = null;
     }
 
     // Gave up partway down and stood back up without reaching depth.
-    if (kneeAngle >= cfg.standingAngle) {
-      this._standingHold++;
-      if (this._standingHold >= cfg.stateHoldFrames) {
+    if (kneeAngle >= this._effectiveStandingAngle()) {
+      if (this._standingSince === null) this._standingSince = timeSec;
+      if (timeSec - this._standingSince >= cfg.stateHoldSeconds) {
         this.phase = "STANDING";
         this._clearHolds();
         this._clearRepTracking();
@@ -154,35 +191,35 @@ export class SquatDetector {
         return;
       }
     } else {
-      this._standingHold = 0;
+      this._standingSince = null;
     }
 
     this._suggest("🟡 Go a little lower", "warn");
   }
 
-  _handleBottom(kneeAngle) {
+  _handleBottom(kneeAngle, timeSec) {
     const cfg = this.cfg;
     if (kneeAngle >= this._minKnee + cfg.ascendingHysteresis) {
-      this._ascendingHold++;
-      if (this._ascendingHold >= cfg.stateHoldFrames) {
+      if (this._ascendingSince === null) this._ascendingSince = timeSec;
+      if (timeSec - this._ascendingSince >= cfg.stateHoldSeconds) {
         this.phase = "ASCENDING";
-        this._ascendingHold = 0;
+        this._ascendingSince = null;
         this._suggest("⬆️ Stand back up", "info");
       }
     } else {
-      this._ascendingHold = 0;
+      this._ascendingSince = null;
     }
   }
 
   _handleAscending(kneeAngle, timeSec) {
     const cfg = this.cfg;
-    if (kneeAngle >= cfg.standingAngle) {
-      this._standingHold++;
-      if (this._standingHold >= cfg.stateHoldFrames) {
+    if (kneeAngle >= this._effectiveStandingAngle()) {
+      if (this._standingSince === null) this._standingSince = timeSec;
+      if (timeSec - this._standingSince >= cfg.stateHoldSeconds) {
         this._completeRep(timeSec);
       }
     } else {
-      this._standingHold = 0;
+      this._standingSince = null;
     }
   }
 
@@ -280,6 +317,7 @@ export function computeSummary(reps, cfg) {
   }
 
   return {
+    exercise: "squat",
     totalReps: n,
     avgRepTime,
     deepest,
@@ -288,5 +326,6 @@ export function computeSummary(reps, cfg) {
     trendNotes,
     trendNote: trendNotes[0] || null, // back-compat for older callers
     reps,
+    goodDepthAngle: cfg.goodDepthAngle,
   };
 }

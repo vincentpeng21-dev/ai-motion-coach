@@ -535,6 +535,58 @@ body {
   margin-bottom: 28px;
 }
 
+/* Exercise selector */
+.exercise-selector {
+  margin-bottom: 28px;
+}
+
+.mode-select-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+.exercise-pills {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.exercise-pill {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 10px 24px;
+  border-radius: 999px;
+  border: 2px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  letter-spacing: 0.5px;
+}
+
+.exercise-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.exercise-pill.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #000;
+}
+
+.exercise-current {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
 .mode-cards {
   display: grid;
   grid-template-columns: 1fr 1fr;
