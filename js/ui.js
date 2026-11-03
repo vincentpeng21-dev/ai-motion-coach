@@ -52,11 +52,12 @@ export function showModeSelect() {
   els.appMain.hidden = true;
 }
 
-/** mode: "webcam" | "video" */
-export function enterMode(mode) {
+/** mode: "webcam" | "video", exerciseLabel: e.g. "🦵 SQUAT" | "💪 DEADLIFT" */
+export function enterMode(mode, exerciseLabel = "") {
   els.modeSelect.hidden = true;
   els.appMain.hidden = false;
-  els.modeTag.textContent = mode === "webcam" ? "📷 WEBCAM" : "🎬 VIDEO UPLOAD";
+  const modeText = mode === "webcam" ? "📷 WEBCAM" : "🎬 VIDEO UPLOAD";
+  els.modeTag.textContent = exerciseLabel ? `${exerciseLabel} · ${modeText}` : modeText;
   els.webcamControls.hidden = mode !== "webcam";
   els.repLogCard.hidden = mode !== "webcam";
 }
@@ -116,20 +117,22 @@ export function setFeedback(text, level) {
   els.feedback.classList.add("pulse");
 }
 
-export function renderRepLog(reps) {
+export function renderRepLog(reps, exercise = "squat") {
   if (!reps.length) {
     els.repLog.innerHTML = `<li class="rep-empty">No reps recorded yet.</li>`;
     return;
   }
   els.repLog.innerHTML = reps
-    .map(
-      (r) => `
-      <li>
+    .map((r) => {
+      const depthLabel = exercise === "deadlift"
+        ? `Min Hip ${Math.round(r.minHip)}°`
+        : `Min Knee ${Math.round(r.minKnee)}°`;
+      return `<li>
         <span class="rep-idx">Rep ${r.index}</span>
         <span class="rep-detail">Duration ${r.duration.toFixed(1)} s</span>
-        <span class="rep-detail">Min Knee ${Math.round(r.minKnee)}°</span>
-      </li>`
-    )
+        <span class="rep-detail">${depthLabel}</span>
+      </li>`;
+    })
     .join("");
   els.repLog.scrollTop = els.repLog.scrollHeight;
 }
@@ -138,6 +141,7 @@ export function showSummary(summary) {
   if (!summary) {
     els.summaryBody.innerHTML = `<p class="rep-empty">No reps were recorded this session.</p>`;
   } else {
+    const isDL = summary.exercise === "deadlift";
     const trends = (summary.trendNotes || [])
       .map((t) => `<p class="summary-trend">⚠️ ${t}</p>`)
       .join("");
@@ -152,11 +156,11 @@ export function showSummary(summary) {
           <span class="summary-value">${summary.avgRepTime.toFixed(1)}s</span>
         </div>
         <div class="summary-tile">
-          <span class="summary-label">Deepest Squat</span>
+          <span class="summary-label">${isDL ? "Best Hip Depth" : "Deepest Squat"}</span>
           <span class="summary-value">${Math.round(summary.deepest)}°</span>
         </div>
         <div class="summary-tile">
-          <span class="summary-label">Average Depth</span>
+          <span class="summary-label">${isDL ? "Avg Hip Depth" : "Average Depth"}</span>
           <span class="summary-value">${Math.round(summary.avgDepth)}°</span>
         </div>
         <div class="summary-tile">
@@ -167,10 +171,13 @@ export function showSummary(summary) {
       ${trends}
       <ol class="summary-reps">
         ${summary.reps
-          .map((r) => `<li><span>#${r.index}</span><span>${Math.round(r.minKnee)}°</span></li>`)
+          .map((r) => {
+            const val = isDL ? r.minHip : r.minKnee;
+            return `<li><span>#${r.index}</span><span>${Math.round(val)}°</span></li>`;
+          })
           .join("")}
       </ol>
-      <p class="summary-disclaimer">Heuristic prototype metrics based on knee-angle tracking only — not a medical or injury assessment.</p>
+      <p class="summary-disclaimer">Heuristic prototype — not a medical or injury assessment.</p>
     `;
   }
   els.summaryOverlay.hidden = false;

@@ -10,6 +10,7 @@
 // upload zone, and again after analysis if tracking quality was poor.
 export const FILMING_TIPS = [
   { icon: "📐", text: "鏡頭打正側面（90°），全身從頭到腳都要入鏡" },
+  { icon: "🚧", text: "避免槓鈴、龍門架或其他器材擋住肩、髖、膝、腳踝這條側面輪廓線" },
   { icon: "💡", text: "光線盡量均勻，避免逆光、鏡子反光或強烈光源直射鏡頭" },
   { icon: "🎥", text: "鏡頭固定不晃動，避免快速甩動或動態模糊" },
 ];
@@ -37,11 +38,68 @@ export function computeTrackingQuality(analysisFrames) {
  * "No reps detected" AI commentary something concrete to talk about
  * instead of nothing.
  */
-export function computeZeroRepDiagnostics(analysisFrames) {
-  const knees = analysisFrames.filter((f) => f.visible && f.kneeAngle !== null).map((f) => f.kneeAngle);
-  const minKneeObserved = knees.length ? Math.min(...knees) : null;
+export function computeZeroRepDiagnostics(analysisFrames, exercise = "squat") {
+  const field = exercise === "deadlift" ? "hipAngle" : "kneeAngle";
+  const values = analysisFrames.filter((f) => f.visible && f[field] !== null).map((f) => f[field]);
+  const minObserved = values.length ? Math.min(...values) : null;
   const durationCovered = analysisFrames.length ? analysisFrames[analysisFrames.length - 1].timestamp : 0;
-  return { minKneeObserved, durationCovered, sampledFrames: analysisFrames.length };
+  return { minObserved, durationCovered, sampledFrames: analysisFrames.length };
+}
+
+function stdDev(values) {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  return Math.sqrt(values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length);
+}
+
+/**
+ * Computes a 0-100 quality score from four dimensions (25 pts each):
+ * depth, consistency, tempo, stability.
+ * Returns null if there are no reps to score.
+ */
+export function computeQualityScore(summary, cfg) {
+  const reps = summary.reps;
+  if (!reps || reps.length === 0) return null;
+
+  const isDL = summary.exercise === "deadlift";
+  const bottomAngle = isDL ? cfg.deadlift.bottomHipAngle : cfg.bottomAngle;
+  const goodDepthAngle = isDL ? cfg.deadlift.goodDepthHipAngle : cfg.goodDepthAngle;
+  const depthField = isDL ? "minHip" : "minKnee";
+
+  // Depth: smaller angle = deeper = better
+  // goodDepthAngle = ideal, bottomAngle = just passing
+  const depthScore = Math.max(0, Math.min(25,
+    ((bottomAngle - summary.avgDepth) / (bottomAngle - goodDepthAngle)) * 25
+  ));
+
+  // Consistency: direct from existing metric
+  const consistencyScore = (summary.consistencyPct / 100) * 25;
+
+  // Tempo: ideal 2-4 seconds per rep (controlled movement)
+  const t = summary.avgRepTime;
+  let tempoScore;
+  if (t >= 2.0 && t <= 4.0) tempoScore = 25;
+  else if (t < 1.0 || t > 7.0) tempoScore = 0;
+  else if (t < 2.0) tempoScore = ((t - 1.0) / 1.0) * 25;
+  else tempoScore = Math.max(0, (1 - (t - 4.0) / 3.0) * 25);
+
+  // Stability: variance in depth + variance in tempo across reps
+  const depthStd = stdDev(reps.map((r) => r[depthField]));
+  const timeStd = stdDev(reps.map((r) => r.duration));
+  const stabilityScore =
+    Math.max(0, 1 - depthStd / 15) * 12.5 +
+    Math.max(0, 1 - timeStd / 1.5) * 12.5;
+
+  const total = Math.min(100, Math.max(0, Math.round(depthScore + consistencyScore + tempoScore + stabilityScore)));
+  return {
+    total,
+    breakdown: {
+      depth: Math.round(depthScore),
+      consistency: Math.round(consistencyScore),
+      tempo: Math.round(tempoScore),
+      stability: Math.round(stabilityScore),
+    },
+  };
 }
 
 /** "125.4" seconds -> "2:05.4" */
@@ -96,11 +154,15 @@ export function repDepthLevel(rep, cfg) {
   return rep.minKnee <= cfg.goodDepthAngle ? "good" : "warn";
 }
 
+export function deadliftDepthLevel(rep, cfg) {
+  return rep.minHip <= cfg.deadlift.goodDepthHipAngle ? "good" : "warn";
+}
+
 /**
  * Draws the Rep-by-Rep Chart: X = rep number, Y = minimum knee angle
  * (Section 九). Plain canvas 2D, no charting library.
  */
-export function drawRepChart(canvas, reps, cfg) {
+export function drawRepChart(canvas, reps, cfg, exercise = "squat") {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || 320;
@@ -112,13 +174,18 @@ export function drawRepChart(canvas, reps, cfg) {
 
   if (!reps.length) return;
 
+  const isDL = exercise === "deadlift";
+  const depthField = isDL ? "minHip" : "minKnee";
+  const bottomAngle = isDL ? cfg.deadlift.bottomHipAngle : cfg.bottomAngle;
+  const goodDepthAngle = isDL ? cfg.deadlift.goodDepthHipAngle : cfg.goodDepthAngle;
+
   const padding = { top: 14, right: 14, bottom: 26, left: 34 };
   const plotW = cssW - padding.left - padding.right;
   const plotH = cssH - padding.top - padding.bottom;
 
-  const knees = reps.map((r) => r.minKnee);
-  const yMin = Math.max(0, Math.min(...knees) - 10);
-  const yMax = Math.min(180, Math.max(...knees) + 10);
+  const depths = reps.map((r) => r[depthField]);
+  const yMin = Math.max(0, Math.min(...depths) - 10);
+  const yMax = Math.min(180, Math.max(...depths) + 10);
   const yRange = Math.max(1, yMax - yMin);
 
   const xForIndex = (i) => padding.left + (plotW * (i + 0.5)) / reps.length;
@@ -134,7 +201,7 @@ export function drawRepChart(canvas, reps, cfg) {
   ctx.stroke();
 
   // Reference line at the "good depth" gate.
-  const refY = yForAngle(cfg.bottomAngle);
+  const refY = yForAngle(bottomAngle);
   ctx.strokeStyle = "rgba(255,176,32,0.5)";
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
@@ -147,9 +214,10 @@ export function drawRepChart(canvas, reps, cfg) {
   const barW = Math.max(6, (plotW / reps.length) * 0.55);
   reps.forEach((r, i) => {
     const x = xForIndex(i);
-    const y = yForAngle(r.minKnee);
+    const depth = r[depthField];
+    const y = yForAngle(depth);
     const baseY = padding.top + plotH;
-    ctx.fillStyle = r.minKnee <= cfg.goodDepthAngle ? "#39ffb0" : r.minKnee <= cfg.bottomAngle ? "#ffb020" : "#ff5470";
+    ctx.fillStyle = depth <= goodDepthAngle ? "#39ffb0" : depth <= bottomAngle ? "#ffb020" : "#ff5470";
     ctx.fillRect(x - barW / 2, y, barW, baseY - y);
 
     ctx.fillStyle = "rgba(234,242,255,0.7)";

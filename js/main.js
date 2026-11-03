@@ -13,6 +13,7 @@ import { CONFIG } from "./config.js";
 import { PoseEngine, drawSkeleton } from "./poseEngine.js";
 import { MotionAnalyzer } from "./motionAnalyzer.js";
 import { SquatDetector, computeSummary } from "./squatDetector.js";
+import { DeadliftDetector, computeDeadliftSummary } from "./deadliftDetector.js";
 import { WebcamInput, mapCameraError } from "./webcamInput.js";
 import { VideoInput } from "./videoInput.js";
 import { VideoAnalysisController } from "./videoAnalysisController.js";
@@ -21,12 +22,61 @@ import * as ui from "./ui.js";
 import * as videoReport from "./videoReport.js";
 
 // ---------------------------------------------------------
-// Shared pipeline (Section 十四 architecture)
+// Shared pipeline
 // ---------------------------------------------------------
 const engine = new PoseEngine();
 const motion = new MotionAnalyzer(CONFIG);
-const squat = new SquatDetector(CONFIG);
+const squatDetector = new SquatDetector(CONFIG);
+const deadliftDetector = new DeadliftDetector(CONFIG);
+
+// Alias used throughout — reassigned when exercise changes
+let squat = squatDetector;
+let currentExercise = "squat"; // "squat" | "deadlift"
+
 const videoAnalysis = new VideoAnalysisController({ engine, motion, squat, cfg: CONFIG });
+
+// ---------------------------------------------------------
+// Exercise selection
+// ---------------------------------------------------------
+function exerciseTag(ex) {
+  return ex === "deadlift" ? "💪 DEADLIFT" : "🦵 SQUAT";
+}
+
+function updateExerciseUI(ex) {
+  // Update UI exercise pills
+  document.querySelectorAll(".exercise-pill").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.exercise === ex);
+  });
+
+  // Update header subtitle
+  const sub = document.querySelector(".brand-sub");
+  if (sub) sub.textContent = ex === "deadlift"
+    ? "Side-View Deadlift Analysis · Prototype"
+    : "Side-View Squat Analysis · Prototype";
+
+  // Explicit "currently selected" confirmation on the mode-select screen
+  const current = document.getElementById("exerciseCurrentLabel");
+  if (current) current.textContent = ex === "deadlift"
+    ? "目前選擇：💪 硬舉 Deadlift"
+    : "目前選擇：🦵 深蹲 Squat";
+}
+
+function setExercise(ex) {
+  updateExerciseUI(ex);
+  if (currentExercise === ex) return;
+  currentExercise = ex;
+  squat = ex === "deadlift" ? deadliftDetector : squatDetector;
+  videoAnalysis.setDetector(squat);
+}
+
+updateExerciseUI(currentExercise);
+
+document.querySelectorAll(".exercise-pill").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    setExercise(btn.dataset.exercise);
+    if (currentMode) teardownMode(); // reset if already in a mode
+  });
+});
 
 const webcamInput = new WebcamInput(ui.els.video);
 const videoInput = new VideoInput(ui.els.video);
@@ -46,6 +96,8 @@ let currentMode = null; // "webcam" | "video"
 // ===========================================================
 // Mode switching
 // ===========================================================
+function getDetector() { return squat; }
+
 function teardownMode() {
   stopWebcamLoop();
   stopVideoPreviewLoop();
@@ -60,7 +112,7 @@ function teardownMode() {
   video.load();
 
   motion.reset();
-  squat.reset();
+  getDetector().reset();
 
   ui.els.stagePlaceholder.style.display = "flex";
   ctx.clearRect(0, 0, ui.els.overlay.width, ui.els.overlay.height);
@@ -83,13 +135,13 @@ function teardownMode() {
 ui.els.modeWebcamBtn.addEventListener("click", () => {
   teardownMode();
   currentMode = "webcam";
-  ui.enterMode("webcam");
+  ui.enterMode("webcam", exerciseTag(currentExercise));
 });
 
 ui.els.modeVideoBtn.addEventListener("click", () => {
   teardownMode();
   currentMode = "video";
-  ui.enterMode("video");
+  ui.enterMode("video", exerciseTag(currentExercise));
   videoReport.enterVideoMode();
   videoReport.setVideoControlsEnabled({ play: false, pause: false, seekStart: false, analyze: false });
 });
@@ -138,7 +190,7 @@ async function openCamera() {
   ui.setButtonState({ camera: false, start: true, stop: false, restart: true });
 
   motion.reset();
-  squat.reset();
+  getDetector().reset();
   lastWebcamVideoTime = -1;
   lastWebcamRepCount = 0;
   stopWebcamLoop();
@@ -159,7 +211,7 @@ function webcamLoop() {
   ui.setSide(frame.side, frame.visible);
   ui.setAngles(frame.kneeAngle, frame.hipAngle, frame.trunkAngle);
 
-  const out = squat.update({
+  const out = getDetector().update({
     kneeAngle: frame.kneeAngle,
     hipAngle: frame.hipAngle,
     visible: frame.visible,
@@ -170,7 +222,7 @@ function webcamLoop() {
   ui.setFeedback(out.feedback.text, out.feedback.level);
   if (out.repCount !== lastWebcamRepCount) {
     lastWebcamRepCount = out.repCount;
-    ui.renderRepLog(out.reps);
+    ui.renderRepLog(out.reps, currentExercise);
   }
 }
 
@@ -180,7 +232,7 @@ function stopWebcamLoop() {
 }
 
 function startTraining() {
-  squat.setActive(true);
+  getDetector().setActive(true);
   lastWebcamRepCount = 0;
   ui.renderRepLog([]);
   ui.hideSummary();
@@ -190,14 +242,18 @@ function startTraining() {
 }
 
 function stopTraining() {
-  squat.setActive(false);
+  getDetector().setActive(false);
   ui.setStatus("Training stopped — session summary below");
   ui.setButtonState({ camera: false, start: true, stop: false, restart: true });
-  ui.showSummary(computeSummary(squat.reps, CONFIG));
+  const det = getDetector();
+  const summary = currentExercise === "deadlift"
+    ? computeDeadliftSummary(det.reps, CONFIG)
+    : computeSummary(det.reps, CONFIG);
+  ui.showSummary(summary);
 }
 
 function restartWebcam() {
-  squat.reset();
+  getDetector().reset();
   lastWebcamRepCount = 0;
   ui.hideSummary();
   ui.renderRepLog([]);
@@ -268,7 +324,7 @@ function videoPreviewFrame() {
   ui.setSide(frame.side, frame.visible);
   ui.setAngles(frame.kneeAngle, frame.hipAngle, frame.trunkAngle);
 
-  const out = squat.update({
+  const out = getDetector().update({
     kneeAngle: frame.kneeAngle,
     hipAngle: frame.hipAngle,
     visible: frame.visible,
@@ -314,7 +370,7 @@ async function handleVideoFile(file) {
   }
 
   motion.reset();
-  squat.reset();
+  getDetector().reset();
   hasAnalyzed = false;
   lastAnalysisFrames = [];
   lastReps = [];
@@ -391,10 +447,13 @@ async function runAnalysis() {
       ui.setStatus("Analysis complete");
       ui.setRepCount(reps.length);
 
-      videoReport.renderRepAnalysisList(reps, CONFIG, seekTo);
+      videoReport.renderRepAnalysisList(reps, CONFIG, seekTo, currentExercise);
       videoReport.renderTimeline(analysisFrames, ui.els.video.duration, CONFIG, seekTo);
       const quality = computeTrackingQuality(analysisFrames);
-      videoReport.renderSessionReport(computeSummary(reps, CONFIG), CONFIG, quality, analysisFrames);
+      const summary = currentExercise === "deadlift"
+        ? computeDeadliftSummary(reps, CONFIG)
+        : computeSummary(reps, CONFIG);
+      videoReport.renderSessionReport(summary, CONFIG, quality, analysisFrames, currentExercise);
 
       videoReport.setVideoControlsEnabled({ play: true, pause: true, seekStart: true, analyze: true });
       startVideoPreviewLoop();

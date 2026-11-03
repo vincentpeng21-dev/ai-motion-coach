@@ -16,18 +16,19 @@
 
 export class VideoAnalysisController {
   constructor({ engine, motion, squat, cfg }) {
-    this.engine = engine; // PoseEngine (shared, already init()'d)
-    this.motion = motion; // MotionAnalyzer (shared)
-    this.squat = squat; // SquatDetector (shared)
+    this.engine = engine;
+    this.motion = motion;
+    this.squat = squat; // active detector (squat or deadlift)
     this.cfg = cfg;
     this.analysisFrames = [];
     this.running = false;
     this._sampleWallTimes = [];
   }
 
-  stop() {
-    this.running = false;
-  }
+  stop() { this.running = false; }
+
+  /** Swap the active exercise detector (call before runAnalysis). */
+  setDetector(det) { this.squat = det; }
 
   /**
    * @param {HTMLVideoElement} video
@@ -49,6 +50,7 @@ export class VideoAnalysisController {
 
     let targetFps = this.cfg.videoAnalysisTargetFps;
     let lastSampledTime = -Infinity;
+    let lastRawMediaTime = -Infinity; // tracks EVERY callback, not just sampled ones
     const originalMuted = video.muted;
     const supportsRVFC = typeof video.requestVideoFrameCallback === "function";
 
@@ -58,8 +60,21 @@ export class VideoAnalysisController {
     } catch {
       /* ignore */
     }
+    // Modern phones default to recording at 4K+. Starting straight at the
+    // configured acceleration on that much source data reliably causes the
+    // decoder to drop presented frames to keep up, collapsing the actual
+    // sample density to a small fraction of the target (observed: ~1
+    // sample/sec on a 4K clip instead of the intended 12fps) — badly
+    // increasing the odds of missing the exact instant a rep bottoms out.
+    // The reactive backoff below still helps mid-analysis, but starting
+    // conservative for large frames avoids losing density during the
+    // several seconds it takes that backoff to fully kick in.
+    const HIGH_RES_PIXEL_THRESHOLD = 1920 * 1080;
+    const videoPixels = (video.videoWidth || 0) * (video.videoHeight || 0);
+    const initialPlaybackRate =
+      videoPixels > HIGH_RES_PIXEL_THRESHOLD ? 1 : this.cfg.videoAnalysisPlaybackRate;
     try {
-      video.playbackRate = this.cfg.videoAnalysisPlaybackRate;
+      video.playbackRate = initialPlaybackRate;
     } catch {
       video.playbackRate = 1;
     }
@@ -77,6 +92,25 @@ export class VideoAnalysisController {
       video.muted = originalMuted;
       video.removeEventListener("ended", finish);
       this.squat.setActive(false);
+
+      // Debug trace: open DevTools console to see exactly what the
+      // detector saw per sampled frame (angle, visibility, phase) — the
+      // fastest way to tell "genuinely fewer reps in the footage" apart
+      // from "sampling missed a rep" or "state machine didn't reset"
+      // without re-instrumenting anything.
+      console.log(
+        `[AI Motion Coach] Analysis trace — ${this.analysisFrames.length} sampled frames, ${this.squat.reps.length} reps counted:`
+      );
+      console.table(
+        this.analysisFrames.map((f) => ({
+          t: f.timestamp.toFixed(2),
+          knee: f.kneeAngle !== null ? Math.round(f.kneeAngle) : null,
+          hip: f.hipAngle !== null ? Math.round(f.hipAngle) : null,
+          visible: f.visible,
+          phase: f.phase,
+        }))
+      );
+
       onComplete && onComplete({ analysisFrames: this.analysisFrames, reps: this.squat.reps });
     };
     video.addEventListener("ended", finish);
@@ -89,6 +123,26 @@ export class VideoAnalysisController {
 
     const processFrame = (mediaTime) => {
       if (!this.running) return;
+
+      // requestVideoFrameCallback fires once per PRESENTED frame. On a
+      // large/high-res file (e.g. a 4K phone recording), the decoder can
+      // fail to keep up with an aggressive playbackRate and starts
+      // dropping presented frames to stay on schedule — so callbacks
+      // still fire, but each one's mediaTime has jumped by far more than
+      // one native frame's worth. Our own targetFps throttle can't fix
+      // this: it only controls how often WE choose to act on a callback,
+      // not how often the browser hands us one. If we detect that kind of
+      // jump, ease playbackRate itself back down (floor at 1x — real-time
+      // decode is what browsers are built to sustain reliably) so the
+      // decoder can actually deliver frames densely enough to catch the
+      // instant a rep bottoms out.
+      if (lastRawMediaTime !== -Infinity) {
+        const rawGap = mediaTime - lastRawMediaTime;
+        if (rawGap > 0.4 && video.playbackRate > 1) {
+          video.playbackRate = Math.max(1, video.playbackRate * 0.75);
+        }
+      }
+      lastRawMediaTime = mediaTime;
 
       const minInterval = 1 / targetFps;
       if (mediaTime - lastSampledTime >= minInterval) {
